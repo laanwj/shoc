@@ -86,7 +86,7 @@ static const char* opts = "-cl-mad-enable -cl-no-signed-zeros "
 // generate simple precision and double precision versions of the benchmarks
 template <class T> void
 RunTest(cl_device_id id, cl_context ctx, cl_command_queue queue, ResultDatabase &resultDB,
-        int npasses, int verbose, int quiet, float repeatF, size_t localSize, ProgressBar &pb, 
+        int npasses, int verbose, int quiet, float repeatF, size_t *localSize, ProgressBar &pb, 
         const char* typeName, const char* precision, const char* pragmaText);
 // Generate OpenCL kernel code based on benchmark type struct
 void generateKernel (ostringstream &oss, struct _benchmark_type &test, const char* tName, const char* header);
@@ -142,7 +142,7 @@ void RunBenchmark(cl::Device& devcpp,
     cl_mem mem1;
     float *hostMem, *hostMem2;
     size_t maxGroupSize = 1;
-    size_t localWorkSize = 1;
+    size_t localWorkSize[2] = {1, 1};
 
     // Seed the random number generator
     srand48(8650341L);
@@ -209,9 +209,10 @@ void RunBenchmark(cl::Device& devcpp,
        CL_CHECK_ERROR (err);
        
        // Determine the maximum work group size for this kernel
-       maxGroupSize = getMaxWorkGroupSize(id);
+       maxGroupSize = getMaxWorkGroupSize(ctx, kernel_madd);
+       cout << "Max group size " << maxGroupSize << endl;
        // use min(maxWorkGroupSize, 256)
-       localWorkSize = maxGroupSize<128?maxGroupSize:128;
+       localWorkSize[0] = maxGroupSize<128?maxGroupSize:128;
        
        // Initialize host data, with the first half the same as the second
        for (int j=0; j<halfNumFloatsMax; ++j) 
@@ -219,7 +220,9 @@ void RunBenchmark(cl::Device& devcpp,
            hostMem[j] = hostMem[numFloatsMax-j-1] = (float)(drand48()*5.0);
        }
        // Set global work size
-       size_t globalWorkSize = numFloatsMax;
+       size_t globalWorkSize[2] = {min(numFloatsMax, 65536), max(numFloatsMax / 65536, 1)};
+       cout << "Local work size " << (int)localWorkSize[0] << " " << (int)localWorkSize[1] << endl;
+       cout << "Global work size " << (int)globalWorkSize[0] << " " << (int)globalWorkSize[1] << endl;
        
        Event evCopyMem("CopyMem");
        err = clEnqueueWriteBuffer (queue, mem1, true, 0,
@@ -231,8 +234,8 @@ void RunBenchmark(cl::Device& devcpp,
        CL_CHECK_ERROR (err);
 
        Event evKernel(temp.name);
-       err = clEnqueueNDRangeKernel (queue, kernel_madd, 1, NULL,
-                                 &globalWorkSize, &localWorkSize,
+       err = clEnqueueNDRangeKernel (queue, kernel_madd, 2, NULL,
+                                 globalWorkSize, localWorkSize,
                                  0, NULL, &evKernel.CLEvent());
        CL_CHECK_ERROR (err);
        // Wait for kernel to finish      
@@ -333,7 +336,7 @@ RunTest(cl_device_id id,
         int verbose,
         int quiet,
         float repeatF,
-        size_t localWorkSize,
+        size_t *localWorkSizeUnused,
         ProgressBar &pb,
         const char* typeName,
         const char* precision,
@@ -439,6 +442,12 @@ RunTest(cl_device_id id,
           cout << "Running kernel " << temp.name << endl;
        }
        
+       size_t maxGroupSize = 1;
+       size_t localWorkSize[2] = {1, 1};
+       maxGroupSize = getMaxWorkGroupSize(ctx, kernel_madd);
+       cout << "Max group size " << maxGroupSize << endl;
+       localWorkSize[0] = maxGroupSize<128?maxGroupSize:128;
+       
        for (int halfNumFloats=temp.halfBufSizeMin*1024 ; 
             halfNumFloats<=temp.halfBufSizeMax*1024 ;
             halfNumFloats*=temp.halfBufSizeStride)
@@ -450,7 +459,9 @@ RunTest(cl_device_id id,
              hostMem[j] = hostMem[numFloats-j-1] = (T)(drand48()*5.0);
           }
 
-          size_t globalWorkSize = numFloats;
+          size_t globalWorkSize[2] = {min(numFloats, 65536), max(numFloats / 65536, 1)};
+          cout << "Local work size " << (int)localWorkSize[0] << " " << (int)localWorkSize[1] << endl;
+          cout << "Global work size " << (int)globalWorkSize[0] << " " << (int)globalWorkSize[1] << endl;
 
           for (int pas=0 ; pas<npasses ; ++pas) 
           {
@@ -461,8 +472,8 @@ RunTest(cl_device_id id,
 
              Event evKernel(temp.name);
              
-             err = clEnqueueNDRangeKernel(queue, kernel_madd, 1, NULL,
-                                 &globalWorkSize, &localWorkSize,
+             err = clEnqueueNDRangeKernel(queue, kernel_madd, 2, NULL,
+                                 globalWorkSize, localWorkSize,
                                  0, NULL, &evKernel.CLEvent());
              CL_CHECK_ERROR(err);
              
@@ -576,8 +587,14 @@ RunTest(cl_device_id id,
         cl_kernel kernel_madd = clCreateKernel(prog, "peak", &err);
         
         // Calculate kernel launch parameters
-        //size_t localWorkSize = maxGroupSize<128?maxGroupSize:128;
-        size_t globalWorkSize = w * h;
+        size_t maxGroupSize = 1;
+        size_t localWorkSize[2] = {1, 1};
+        maxGroupSize = getMaxWorkGroupSize(ctx, kernel_madd);
+        localWorkSize[0] = maxGroupSize<128?maxGroupSize:128;
+        cout << "Max group size " << maxGroupSize << endl;
+        size_t globalWorkSize[2] = {min(w*h, 65536), max(w*h / 65536, 1)};
+        cout << "Local work size " << (int)localWorkSize[0] << " " << (int)localWorkSize[1] << endl;
+        cout << "Global work size " << (int)globalWorkSize[0] << " " << (int)globalWorkSize[1] << endl;
         
         // Set the arguments
         err = clSetKernelArg(kernel_madd, 0, sizeof(cl_mem), (void*)&mem1);
@@ -592,8 +609,8 @@ RunTest(cl_device_id id,
             // Event object for timing
             Event evKernel_madd("madd");
             
-            err = clEnqueueNDRangeKernel(queue, kernel_madd, 1, NULL,
-                      &globalWorkSize, &localWorkSize,
+            err = clEnqueueNDRangeKernel(queue, kernel_madd, 2, NULL,
+                      globalWorkSize, localWorkSize,
                       0, NULL, &evKernel_madd.CLEvent());
             CL_CHECK_ERROR(err);
     
@@ -658,7 +675,7 @@ generateKernel (ostringstream &oss, struct _benchmark_type &test, const char* tN
     string kName = test.name;
     oss << header << endl;
     oss << string("__kernel void ") << kName << "(__global " << tName << " *data, int nIters) {\n"
-        << "  int gid = get_global_id(0), globalSize = get_global_size(0);\n";
+        << "  int gid = get_global_id(0) | (get_global_id(1)<<16), globalSize = get_global_size(0) * get_global_size(1);\n";
     // use vector types to store the index variables when the number of streams is > 1
     // OpenCL has vectors of length 1 (scalar), 2, 4, 8, 16. Use the largest vector possible.
     // keep track of how many vectors of each size we are going to use.
@@ -858,7 +875,7 @@ generateUKernel(int useMADDMUL, bool doublePrecision, int nRepeats, int nUnrolls
     string kSource = string(header) + "\n"
     "__kernel void peak(__global " + tName +" *target, " + tName + " val1, " + tName + " val2) "
     "{                                                                      "
-    " int index = get_global_id(0);                                         "
+    " int index = get_global_id(0) | (get_global_id(1) << 16);                      "
     " " + tName + " v0=val1,     v1=val2,     v2=v0+v1,    v3=v0+v2;                "
     " " + tName + " v4=v0+v3,    v5=v0+v4,    v6=v0+v5,    v7=v0+v6;                "
     " " + tName + " v8=v0+v7,    v9=v0+v8,    v10=v0+v9,   v11=v0+v10;              "
